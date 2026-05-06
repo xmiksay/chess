@@ -38,8 +38,30 @@ Server defaultně naslouchá na `0.0.0.0:3000`. Otevři http://127.0.0.1:3000.
 | `--csv` | `lichess_db_puzzle.csv.zst` | Cesta k CSV (podporuje `.zst`) |
 | `--bind` | `0.0.0.0:3000` | Adresa pro HTTP server |
 | `--static-dir` | `static` | Adresář se statickými soubory |
+| `--limit-puzzle` (`LIMIT_PUZZLE`) | `1` | Načti každou N-tou hádanku (1 = vše, 10 = každá 10.) — užitečné pro dev / málo RAM |
 
 Logy se ovládají přes `RUST_LOG` (např. `RUST_LOG=info,tower_http=debug`).
+
+## Docker
+
+Hotový image obsahuje binárku, statiku i Lichess CSV (stahuje se za buildu z `https://database.lichess.org/`):
+
+```bash
+docker run --rm -p 3000:3000 ghcr.io/<owner>/chess-puzzles:latest
+```
+
+Méně paměti / rychlejší start (každá 10. hádanka):
+
+```bash
+docker run --rm -p 3000:3000 -e LIMIT_PUZZLE=10 ghcr.io/<owner>/chess-puzzles:latest
+```
+
+Lokální build:
+
+```bash
+docker build -t chess-puzzles:dev .
+docker run --rm -p 3000:3000 -e LIMIT_PUZZLE=100 chess-puzzles:dev
+```
 
 ## API
 

@@ -23,15 +23,23 @@
     page-break-before: always;
     break-before: page;
   }
-  /* breathing room at the top of every page (works regardless of @page) */
-  .grid-puzzles > .puzzle:nth-child(9n+1) { padding-top: 8mm; }
+  /* breathing room at the top of every printed page — applied to ALL boards
+     in the first row (positions 9n+1, 9n+2, 9n+3) so they line up. Putting it
+     only on 9n+1 pushes the leftmost board 8mm below its row neighbors. */
+  .grid-puzzles > .puzzle:nth-child(9n+1),
+  .grid-puzzles > .puzzle:nth-child(9n+2),
+  .grid-puzzles > .puzzle:nth-child(9n+3) { padding-top: 8mm; }
   .solutions { page-break-before: always; break-before: page; }
 
   @page { size: A4; margin: 10mm; }
 
   @media print {
-    body { background: white !important; }
-    .no-print { display: none !important; }
+    html, body { background: white !important; margin: 0 !important; padding: 0 !important; }
+    /* Hard-hide the screen-only header — no display, no size, no margin.
+       Boards are in a sibling .print-area, so nothing leaks into the print flow. */
+    .no-print { display: none !important; height: 0 !important; margin: 0 !important; padding: 0 !important; }
+    #app { padding: 0 !important; margin: 0 !important; max-width: none !important; }
+    .print-area { padding: 0 !important; margin: 0 !important; max-width: none !important; }
     cg-board, .cg-wrap, .cg-wrap *, cg-board * {
       -webkit-print-color-adjust: exact !important;
       print-color-adjust: exact !important;
@@ -53,50 +61,54 @@
 </head>
 <body class="bg-gray-100 text-gray-900">
 
-<div id="app" class="max-w-[210mm] mx-auto p-4">
-  <header class="no-print mb-4 flex flex-wrap items-baseline gap-4">
-    <h1 class="text-2xl font-bold">Šachové hádanky</h1>
-    <a href="/" class="text-sm text-blue-600 hover:underline">← Filtr</a>
-    <button @click="doPrint" class="ml-auto bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm">🖨 Tisk</button>
-    <span v-if="info" class="text-sm text-gray-600 w-full">{{ info }}</span>
-  </header>
-
-  <section v-if="puzzles.length" class="grid-puzzles">
-    <article v-for="(p, i) in puzzles" :key="p.id" class="puzzle">
-      <a :href="'/solve.html?id=' + p.id" class="block">
-        <div class="board" :ref="el => boardRefs[i] = el"></div>
-        <div class="mt-2 text-xs text-center leading-snug">
-          <div class="font-semibold">{{ i + 1 }}. {{ p.toMove === 'white' ? 'Bílý' : 'Černý' }} táhne</div>
-          <div class="text-gray-600">#{{ p.id }} · rating {{ p.rating }}</div>
-        </div>
-      </a>
-    </article>
-  </section>
-
-  <section v-if="puzzles.length && showMoves" class="solutions mt-8">
-    <h2 class="text-xl font-bold mb-4">Řešení</h2>
-    <ol class="space-y-2 text-sm">
-      <li v-for="(p, i) in puzzles" :key="p.id" class="flex gap-3">
-        <span class="font-semibold w-8 text-right shrink-0">{{ i + 1 }}.</span>
-        <div class="min-w-0">
-          <div>
-            <span class="font-mono">#{{ p.id }}</span>
-            <span class="text-gray-600"> — {{ p.toMove === 'white' ? 'Bílý' : 'Černý' }} táhne (rating {{ p.rating }})</span>
-          </div>
-          <div>
-            <span class="text-gray-600">Soupeř zahrál: </span>
-            <span class="font-mono">{{ p.setupSan }}</span>
-            <span class="text-gray-600"> · řešení: </span>
-            <span class="font-mono">{{ p.solutionSan }}</span>
-          </div>
-        </div>
-      </li>
-    </ol>
-  </section>
-
-  <div v-if="!loading && !puzzles.length" class="text-gray-500 text-center mt-12">
-    Žádné hádanky neodpovídají filtru. <a href="/" class="text-blue-600 hover:underline">Zpět na filtr</a>.
+<div id="app">
+  <div class="no-print max-w-[210mm] mx-auto p-4">
+    <header class="flex flex-wrap items-baseline gap-4">
+      <h1 class="text-2xl font-bold">Šachové hádanky</h1>
+      <a href="/" class="text-sm text-blue-600 hover:underline">← Filtr</a>
+      <button @click="doPrint" class="ml-auto bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm">🖨 Tisk</button>
+    </header>
+    <p v-if="info" class="text-sm text-gray-600 mt-2">{{ info }}</p>
   </div>
+
+  <main class="print-area max-w-[210mm] mx-auto p-4">
+    <section v-if="puzzles.length" class="grid-puzzles">
+      <article v-for="(p, i) in puzzles" :key="p.id" class="puzzle">
+        <a :href="'/solve.html?id=' + p.id" class="block">
+          <div class="board" :ref="el => boardRefs[i] = el"></div>
+          <div class="mt-2 text-xs text-center leading-snug">
+            <div class="font-semibold">{{ i + 1 }}. {{ p.toMove === 'white' ? 'Bílý' : 'Černý' }} táhne</div>
+            <div class="text-gray-600">#{{ p.id }} · rating {{ p.rating }}</div>
+          </div>
+        </a>
+      </article>
+    </section>
+
+    <section v-if="puzzles.length && showMoves" class="solutions mt-8">
+      <h2 class="text-xl font-bold mb-4">Řešení</h2>
+      <ol class="space-y-2 text-sm">
+        <li v-for="(p, i) in puzzles" :key="p.id" class="flex gap-3">
+          <span class="font-semibold w-8 text-right shrink-0">{{ i + 1 }}.</span>
+          <div class="min-w-0">
+            <div>
+              <span class="font-mono">#{{ p.id }}</span>
+              <span class="text-gray-600"> — {{ p.toMove === 'white' ? 'Bílý' : 'Černý' }} táhne (rating {{ p.rating }})</span>
+            </div>
+            <div>
+              <span class="text-gray-600">Soupeř zahrál: </span>
+              <span class="font-mono">{{ p.setupSan }}</span>
+              <span class="text-gray-600"> · řešení: </span>
+              <span class="font-mono">{{ p.solutionSan }}</span>
+            </div>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <div v-if="!loading && !puzzles.length" class="text-gray-500 text-center mt-12">
+      Žádné hádanky neodpovídají filtru. <a href="/" class="text-blue-600 hover:underline">Zpět na filtr</a>.
+    </div>
+  </main>
 </div>
 
 <script type="module">

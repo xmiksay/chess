@@ -1,0 +1,9 @@
+target
+*.csv
+*.csv.zst
+.git
+.github
+.gitignore
+README.md
+Dockerfile
+.dockerignore

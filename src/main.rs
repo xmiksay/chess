@@ -33,6 +33,10 @@ struct Args {
 
     #[arg(long, default_value = "static")]
     static_dir: PathBuf,
+
+    /// Keep every Nth puzzle (1 = all, 10 = every 10th, ...).
+    #[arg(long, env = "LIMIT_PUZZLE", default_value_t = 1)]
+    limit_puzzle: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,9 +85,10 @@ struct AppState {
     rating_max: u16,
 }
 
-fn load_puzzles(path: &PathBuf) -> Result<Vec<Puzzle>> {
+fn load_puzzles(path: &PathBuf, limit: usize) -> Result<Vec<Puzzle>> {
     let start = Instant::now();
-    info!("loading puzzles from {}", path.display());
+    let step = limit.max(1);
+    info!("loading puzzles from {} (step={})", path.display(), step);
 
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening {}", path.display()))?;
@@ -99,8 +104,12 @@ fn load_puzzles(path: &PathBuf) -> Result<Vec<Puzzle>> {
         .has_headers(true)
         .from_reader(reader);
 
-    let mut puzzles: Vec<Puzzle> = Vec::with_capacity(6_000_000);
-    for record in rdr.deserialize::<CsvRow>() {
+    let capacity = if step > 1 { 6_000_000 / step } else { 6_000_000 };
+    let mut puzzles: Vec<Puzzle> = Vec::with_capacity(capacity);
+    for (idx, record) in rdr.deserialize::<CsvRow>().enumerate() {
+        if step > 1 && idx % step != 0 {
+            continue;
+        }
         let r = record?;
         puzzles.push(Puzzle {
             id: r.puzzle_id.into_boxed_str(),
@@ -117,8 +126,9 @@ fn load_puzzles(path: &PathBuf) -> Result<Vec<Puzzle>> {
     }
 
     info!(
-        "loaded {} puzzles in {:?}",
+        "loaded {} puzzles (step={}) in {:?}",
         puzzles.len(),
+        step,
         start.elapsed()
     );
     Ok(puzzles)
@@ -326,7 +336,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let puzzles = load_puzzles(&args.csv)?;
+    let puzzles = load_puzzles(&args.csv, args.limit_puzzle)?;
     let state = Arc::new(build_state(puzzles));
 
     let app = Router::new()
