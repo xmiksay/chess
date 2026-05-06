@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Šachové hádanky · filtr</title>
+<script src="https://unpkg.com/vue@3.5.13/dist/vue.global.prod.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 text-gray-900">
+
+<div id="app" class="max-w-3xl mx-auto p-4">
+  <header class="mb-6">
+    <h1 class="text-2xl font-bold">Šachové hádanky</h1>
+    <p class="text-sm text-gray-600">
+      <span v-if="meta">Databáze: {{ meta.total_puzzles.toLocaleString('cs') }} hádanek · max {{ meta.hard_limit }} výsledků na dotaz</span>
+      <span v-else>Načítám…</span>
+    </p>
+  </header>
+
+  <section class="bg-white rounded-lg shadow p-5">
+    <h2 class="font-semibold mb-3">Konfigurace</h2>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+      <label class="flex flex-col">
+        <span class="text-gray-600">Rating od</span>
+        <input v-model.number="filter.rating_min" type="number" class="border rounded px-2 py-1" :placeholder="meta?.rating_min ?? ''" />
+      </label>
+      <label class="flex flex-col">
+        <span class="text-gray-600">Rating do</span>
+        <input v-model.number="filter.rating_max" type="number" class="border rounded px-2 py-1" :placeholder="meta?.rating_max ?? ''" />
+      </label>
+      <label class="flex flex-col">
+        <span class="text-gray-600">Téma</span>
+        <select v-model="filter.theme" class="border rounded px-2 py-1">
+          <option value="">— libovolné —</option>
+          <option v-for="t in (meta?.themes ?? [])" :key="t" :value="t">{{ t }}</option>
+        </select>
+      </label>
+      <label class="flex flex-col">
+        <span class="text-gray-600">Otevření (název)</span>
+        <input v-model="filter.opening" type="text" placeholder="např. Sicilian_Defense" class="border rounded px-2 py-1" />
+      </label>
+      <label class="flex flex-col">
+        <span class="text-gray-600">Hledat (id/téma)</span>
+        <input v-model="filter.q" type="text" placeholder="klíčové slovo" class="border rounded px-2 py-1" />
+      </label>
+      <label class="flex flex-col">
+        <span class="text-gray-600">Řadit</span>
+        <select v-model="filter.sort" class="border rounded px-2 py-1">
+          <option value="">— pořadí v DB —</option>
+          <option value="random">Náhodně</option>
+          <option value="rating">Rating ↑</option>
+          <option value="rating_desc">Rating ↓</option>
+          <option value="popularity">Popularita</option>
+          <option value="plays">Nejvíce her</option>
+        </select>
+      </label>
+      <label class="flex flex-col">
+        <span class="text-gray-600">Počet hádanek</span>
+        <input v-model.number="filter.limit" type="number" min="1" :max="meta?.hard_limit ?? 500" class="border rounded px-2 py-1" />
+        <span class="text-xs text-gray-500 mt-1">Tisk: 9 hádanek na stranu (3×3).</span>
+      </label>
+      <label class="flex items-center gap-2 mt-6">
+        <input v-model="filter.show_moves" type="checkbox" class="w-4 h-4" />
+        <span>Zobrazit řešení na konci dokumentu</span>
+      </label>
+      <label class="flex items-center gap-2 mt-6">
+        <input v-model="filter.bw" type="checkbox" class="w-4 h-4" />
+        <span>Černobíle (pro tisk na čb tiskárně)</span>
+      </label>
+      <label class="flex items-center gap-2 mt-6">
+        <input v-model="filter.coords" type="checkbox" class="w-4 h-4" />
+        <span>Notace na šachovnici (a–h, 1–8)</span>
+      </label>
+    </div>
+
+    <div class="flex flex-wrap gap-3 mt-6">
+      <button @click="goPrint" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded font-semibold">
+        🖨 Generovat hádanky
+      </button>
+      <button @click="goSolve" class="bg-gray-200 hover:bg-gray-300 px-4 py-2 rounded">
+        ♟ Interaktivně
+      </button>
+      <button @click="resetFilter" class="bg-gray-100 hover:bg-gray-200 px-3 py-2 rounded text-sm">Reset</button>
+    </div>
+  </section>
+</div>
+
+<script>
+const { createApp, ref, reactive, onMounted } = Vue;
+
+createApp({
+  setup() {
+    const meta = ref(null);
+    const filter = reactive({
+      rating_min: 1500,
+      rating_max: 1800,
+      theme: 'mate',
+      opening: '',
+      q: '',
+      sort: 'random',
+      limit: 9,
+      show_moves: true,
+      bw: false,
+      coords: false,
+    });
+
+    async function loadMeta() {
+      const r = await fetch('/api/meta');
+      meta.value = await r.json();
+    }
+
+    function buildQuery({ forPrint }) {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(filter)) {
+        if (k === 'show_moves' || k === 'bw' || k === 'coords') {
+          if (forPrint && v) params.set(k, '1');
+          continue;
+        }
+        if (v !== '' && v !== null && v !== undefined) params.set(k, String(v));
+      }
+      return params.toString();
+    }
+
+    function goPrint() {
+      location.href = '/print.html?' + buildQuery({ forPrint: true });
+    }
+    function goSolve() {
+      location.href = '/solve.html?' + buildQuery({ forPrint: false });
+    }
+    function resetFilter() {
+      Object.assign(filter, {
+        rating_min: null, rating_max: null, theme: '',
+        opening: '', q: '', sort: 'random', limit: 9, show_moves: true, bw: false, coords: false,
+      });
+    }
+
+    onMounted(loadMeta);
+    return { meta, filter, goPrint, goSolve, resetFilter };
+  },
+}).mount('#app');
+</script>
+</body>
+</html>

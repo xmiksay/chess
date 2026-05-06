@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Šachové hádanky · interaktivně</title>
+<script src="https://unpkg.com/vue@3.5.13/dist/vue.global.prod.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://unpkg.com/chessground@9.1.1/assets/chessground.base.css" />
+<link rel="stylesheet" href="https://unpkg.com/chessground@9.1.1/assets/chessground.brown.css" />
+<link rel="stylesheet" href="https://unpkg.com/chessground@9.1.1/assets/chessground.cburnett.css" />
+<style>
+  cg-board { background-color: #b58863; }
+  .board-wrap { width: min(560px, 92vw); aspect-ratio: 1 / 1; }
+  .puzzle-row.active { background: #2563eb; color: white; }
+  .puzzle-row { cursor: pointer; }
+  .puzzle-row:hover { background: #e5e7eb; }
+  .puzzle-row.active:hover { background: #1d4ed8; }
+  .pulse-good { animation: pulse-good 0.6s; }
+  .pulse-bad { animation: pulse-bad 0.6s; }
+  @keyframes pulse-good { 0% { background: #bbf7d0; } 100% { background: transparent; } }
+  @keyframes pulse-bad { 0% { background: #fecaca; } 100% { background: transparent; } }
+</style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+
+<div id="app" class="max-w-7xl mx-auto p-4">
+  <header class="mb-4 flex items-baseline gap-4">
+    <h1 class="text-2xl font-bold">Šachové hádanky</h1>
+    <a href="/" class="text-sm text-blue-600 hover:underline">← Filtr</a>
+    <a v-if="!singleMode" href="#" @click.prevent="goPrint" class="text-sm text-blue-600 hover:underline">🖨 Tisk</a>
+  </header>
+
+  <div v-if="!singleMode" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div class="lg:col-span-1 bg-white rounded-lg shadow overflow-hidden">
+      <div class="p-3 border-b font-semibold">Výsledky ({{ results.length }})</div>
+      <div class="max-h-[640px] overflow-y-auto">
+        <div v-if="!results.length" class="p-4 text-sm text-gray-500">Žádné výsledky.</div>
+        <table v-if="results.length" class="w-full text-sm">
+          <thead class="bg-gray-50 text-xs uppercase text-gray-500 sticky top-0">
+            <tr>
+              <th class="text-left px-3 py-2">ID</th>
+              <th class="text-right px-3 py-2">Rating</th>
+              <th class="text-left px-3 py-2">Témata</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in results" :key="p.id"
+                class="puzzle-row border-t"
+                :class="{ active: selected?.id === p.id }"
+                @click="selectPuzzle(p)">
+              <td class="px-3 py-2 font-mono text-xs">{{ p.id }}</td>
+              <td class="px-3 py-2 text-right">{{ p.rating }}</td>
+              <td class="px-3 py-2 text-xs truncate max-w-[200px]" :title="p.themes">{{ p.themes }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="lg:col-span-2 bg-white rounded-lg shadow p-4">
+      <puzzle-board v-if="selected" :p="selected" />
+      <div v-if="!selected" class="text-gray-500 text-sm">Vyber hádanku ze seznamu vlevo.</div>
+    </div>
+  </div>
+
+  <div v-if="singleMode" class="bg-white rounded-lg shadow p-4">
+    <puzzle-board v-if="selected" :p="selected" />
+    <div v-if="!selected" class="text-gray-500 text-sm">Načítám hádanku…</div>
+  </div>
+</div>
+
+<script type="module">
+import { Chessground } from 'https://esm.sh/chessground@9.1.1';
+import { Chess } from 'https://esm.sh/chess.js@1.0.0';
+
+const { createApp, ref, reactive, computed, onMounted, nextTick, watch, defineComponent, h } = Vue;
+
+const PuzzleBoard = defineComponent({
+  props: { p: { type: Object, required: true } },
+  setup(props) {
+    const boardEl = ref(null);
+    let cg = null;
+    let chess = null;
+    const moveList = ref([]);
+    const movesPlayed = ref(0);
+    const status = reactive({ kind: 'idle', text: '' });
+    const solved = ref(false);
+    let userColor = 'white';
+    let orientation = 'white';
+
+    function legalDests(c) {
+      const dests = new Map();
+      c.moves({ verbose: true }).forEach(m => {
+        if (!dests.has(m.from)) dests.set(m.from, []);
+        dests.get(m.from).push(m.to);
+      });
+      return dests;
+    }
+    function turnColor(c) { return c.turn() === 'w' ? 'white' : 'black'; }
+
+    function refreshBoard({ animate = true } = {}) {
+      if (!cg || !chess) return;
+      cg.set({
+        fen: chess.fen(),
+        turnColor: turnColor(chess),
+        animation: { enabled: animate },
+        check: chess.inCheck(),
+        movable: {
+          color: solved.value ? undefined : userColor,
+          dests: legalDests(chess),
+        },
+      });
+    }
+
+    function setStatus(kind, text) { status.kind = kind; status.text = text; }
+
+    function mountGround() {
+      if (cg) { cg.destroy(); cg = null; }
+      if (!boardEl.value) return;
+      cg = Chessground(boardEl.value, {
+        fen: chess.fen(),
+        orientation,
+        turnColor: turnColor(chess),
+        movable: {
+          free: false,
+          color: undefined,
+          dests: legalDests(chess),
+          showDests: true,
+          events: { after: onUserMove },
+        },
+        animation: { enabled: true, duration: 200 },
+        highlight: { lastMove: true, check: true },
+        draggable: { showGhost: true },
+      });
+    }
+
+    function applyUci(uci) {
+      const from = uci.slice(0, 2);
+      const to = uci.slice(2, 4);
+      const promotion = uci.length > 4 ? uci[4] : undefined;
+      return chess.move({ from, to, promotion });
+    }
+
+    function playComputerMove() {
+      if (!chess || movesPlayed.value >= moveList.value.length) return;
+      const m = applyUci(moveList.value[movesPlayed.value]);
+      if (!m) return;
+      movesPlayed.value += 1;
+      refreshBoard();
+      if (movesPlayed.value >= moveList.value.length) {
+        solved.value = true;
+        setStatus('done', '🎉 Vyřešeno!');
+        return;
+      }
+      setStatus('your-turn', 'Tvůj tah – najdi nejlepší pokračování.');
+    }
+
+    function onUserMove(orig, dest) {
+      if (!chess || solved.value) return;
+      const expected = moveList.value[movesPlayed.value];
+      if (!expected) return;
+      let uci = orig + dest;
+      const piece = chess.get(orig);
+      if (piece && piece.type === 'p' && (dest[1] === '8' || dest[1] === '1')) uci += 'q';
+      const isCorrect = uci === expected
+        || (uci.length === 4 && expected.length === 5 && uci === expected.slice(0, 4));
+      if (!isCorrect) {
+        setStatus('wrong', `Špatný tah (${uci}). Zkus to znovu.`);
+        refreshBoard({ animate: false });
+        flash('pulse-bad');
+        return;
+      }
+      const m = applyUci(expected);
+      if (!m) { refreshBoard({ animate: false }); return; }
+      movesPlayed.value += 1;
+      refreshBoard();
+      flash('pulse-good');
+      if (movesPlayed.value >= moveList.value.length) {
+        solved.value = true;
+        setStatus('done', '🎉 Vyřešeno!');
+        return;
+      }
+      setStatus('thinking', 'Soupeř odpovídá…');
+      setTimeout(playComputerMove, 500);
+    }
+
+    function flash(cls) {
+      if (!boardEl.value) return;
+      boardEl.value.classList.remove('pulse-good', 'pulse-bad');
+      void boardEl.value.offsetWidth;
+      boardEl.value.classList.add(cls);
+    }
+
+    function start() {
+      solved.value = false;
+      chess = new Chess(props.p.fen);
+      moveList.value = props.p.moves.split(' ').filter(Boolean);
+      movesPlayed.value = 0;
+      userColor = chess.turn() === 'w' ? 'black' : 'white';
+      orientation = userColor;
+      nextTick(() => {
+        mountGround();
+        setStatus('thinking', `Soupeř hraje… (Hraješ za ${userColor === 'white' ? 'bílého' : 'černého'}.)`);
+        setTimeout(playComputerMove, 600);
+      });
+    }
+
+    function showHint() {
+      const next = moveList.value[movesPlayed.value];
+      if (!next) return;
+      cg?.set({ selected: next.slice(0, 2), lastMove: undefined });
+      setStatus('hint', `Nápověda: zahrej figurou z ${next.slice(0, 2)}.`);
+    }
+    function showSolution() {
+      if (!chess || solved.value) return;
+      const playRest = () => {
+        if (movesPlayed.value >= moveList.value.length) {
+          solved.value = true;
+          setStatus('done', 'Řešení dohráno.');
+          return;
+        }
+        const m = applyUci(moveList.value[movesPlayed.value]);
+        if (m) { movesPlayed.value += 1; refreshBoard(); }
+        setTimeout(playRest, 450);
+      };
+      setStatus('solution', 'Přehrávám řešení…');
+      playRest();
+    }
+    function flipBoard() {
+      orientation = orientation === 'white' ? 'black' : 'white';
+      cg?.set({ orientation });
+    }
+
+    const statusTitle = computed(() => ({
+      idle: 'Připraveno', thinking: 'Tah soupeře', 'your-turn': 'Tvůj tah',
+      wrong: 'Chyba', hint: 'Nápověda', solution: 'Řešení', done: 'Hotovo',
+    })[status.kind] || '');
+    const statusClass = computed(() => ({
+      idle: 'bg-gray-100 text-gray-800', thinking: 'bg-blue-50 text-blue-900',
+      'your-turn': 'bg-amber-50 text-amber-900', wrong: 'bg-red-50 text-red-900',
+      hint: 'bg-yellow-50 text-yellow-900', solution: 'bg-purple-50 text-purple-900',
+      done: 'bg-green-50 text-green-900',
+    })[status.kind] || 'bg-gray-100');
+
+    watch(() => props.p?.id, () => start(), { immediate: false });
+    onMounted(start);
+
+    return () => h('div', [
+      h('div', { class: 'flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-3' }, [
+        h('h2', { class: 'text-lg font-semibold' }, ['Hádanka ', h('span', { class: 'font-mono' }, '#' + props.p.id)]),
+        h('span', { class: 'text-sm text-gray-600' },
+          `Rating ${props.p.rating} · ${props.p.popularity} pop · ${props.p.nb_plays.toLocaleString('cs')} her`),
+        h('a', { href: props.p.game_url, target: '_blank', rel: 'noreferrer', class: 'text-sm text-blue-600 hover:underline' }, 'Lichess ↗'),
+      ]),
+      h('p', { class: 'text-xs text-gray-500 mb-2' },
+        props.p.themes + (props.p.opening_tags ? ' · ' + props.p.opening_tags : '')),
+      h('div', { class: 'flex flex-col md:flex-row gap-4' }, [
+        h('div', { class: 'board-wrap', ref: boardEl }),
+        h('div', { class: 'flex-1 min-w-[200px]' }, [
+          h('div', { class: 'mb-3 p-3 rounded text-sm ' + statusClass.value }, [
+            h('div', { class: 'font-semibold' }, statusTitle.value),
+            h('div', null, status.text),
+          ]),
+          h('div', { class: 'flex flex-wrap gap-2 mb-3' }, [
+            h('button', { onClick: start, class: 'bg-gray-200 hover:bg-gray-300 px-3 py-1.5 rounded text-sm' }, '↺ Restart'),
+            h('button', { onClick: showHint, disabled: solved.value, class: 'bg-yellow-100 hover:bg-yellow-200 disabled:opacity-50 px-3 py-1.5 rounded text-sm' }, '💡 Nápověda'),
+            h('button', { onClick: showSolution, disabled: solved.value, class: 'bg-red-100 hover:bg-red-200 disabled:opacity-50 px-3 py-1.5 rounded text-sm' }, '👁 Řešení'),
+            h('button', { onClick: flipBoard, class: 'bg-gray-200 hover:bg-gray-300 px-3 py-1.5 rounded text-sm' }, '↕ Otočit'),
+          ]),
+          h('div', { class: 'text-xs text-gray-600' }, [
+            h('div', { class: 'mb-1' }, [h('strong', null, 'Tahy:')]),
+            h('div', { class: 'flex flex-wrap gap-1' },
+              moveList.value.map((m, i) => h('span', {
+                class: 'px-1.5 py-0.5 rounded font-mono text-xs ' + (i < movesPlayed.value ? 'bg-green-200' : 'bg-gray-100'),
+              }, m))),
+          ]),
+        ]),
+      ]),
+    ]);
+  },
+});
+
+createApp({
+  components: { PuzzleBoard },
+  setup() {
+    const params = new URLSearchParams(location.search);
+    const singleId = params.get('id');
+    const singleMode = ref(!!singleId);
+    const results = ref([]);
+    const selected = ref(null);
+
+    async function loadSingle(id) {
+      const r = await fetch('/api/puzzle/' + encodeURIComponent(id));
+      if (r.ok) selected.value = await r.json();
+    }
+    async function runSearch() {
+      const search = new URLSearchParams();
+      for (const [k, v] of params.entries()) {
+        if (k === 'id' || k === 'show_moves') continue;
+        if (v) search.set(k, v);
+      }
+      const r = await fetch('/api/search?' + search.toString());
+      const data = await r.json();
+      results.value = data.puzzles;
+      if (data.puzzles.length) selectPuzzle(data.puzzles[0]);
+    }
+    function selectPuzzle(p) { selected.value = p; }
+    function goPrint() { location.href = '/print.html' + location.search; }
+
+    onMounted(() => { singleId ? loadSingle(singleId) : runSearch(); });
+    return { singleMode, results, selected, selectPuzzle, goPrint };
+  },
+}).mount('#app');
+</script>
+</body>
+</html>

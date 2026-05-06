@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Šachové hádanky · tisk</title>
+<script src="https://unpkg.com/vue@3.5.13/dist/vue.global.prod.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://unpkg.com/chessground@9.1.1/assets/chessground.base.css" />
+<link rel="stylesheet" href="https://unpkg.com/chessground@9.1.1/assets/chessground.brown.css" />
+<link rel="stylesheet" href="https://unpkg.com/chessground@9.1.1/assets/chessground.cburnett.css" />
+<style>
+  cg-board { background-color: #b58863; }
+  .puzzle { break-inside: avoid; page-break-inside: avoid; }
+  .board { width: 95%; aspect-ratio: 1 / 1; margin: 0 auto; }
+  .grid-puzzles {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14mm 8mm;
+  }
+  /* every 9th element starts a new printed page (skip the very first) */
+  .grid-puzzles > .puzzle:nth-child(9n+1):not(:first-child) {
+    page-break-before: always;
+    break-before: page;
+  }
+  /* breathing room at the top of every page (works regardless of @page) */
+  .grid-puzzles > .puzzle:nth-child(9n+1) { padding-top: 8mm; }
+  .solutions { page-break-before: always; break-before: page; }
+
+  @page { size: A4; margin: 10mm; }
+
+  @media print {
+    body { background: white !important; }
+    .no-print { display: none !important; }
+    cg-board, .cg-wrap, .cg-wrap *, cg-board * {
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    .puzzle a { color: #000 !important; text-decoration: none !important; }
+  }
+
+  /* Keep rank/file labels inside the board edge so they don't bleed into the grid gap */
+  .cg-wrap coords.ranks { right: 1px !important; }
+  .cg-wrap coords.files { bottom: 0 !important; }
+  .cg-wrap coords coord { font-size: 8px !important; padding: 1px; }
+
+  /* Black & white mode for printing on monochrome printers */
+  body.bw cg-board { background-color: #d4d4d4 !important; }
+  body.bw .cg-wrap square.last-move,
+  body.bw .cg-wrap square.selected { background: rgba(0, 0, 0, 0.15) !important; }
+  body.bw .cg-wrap { filter: grayscale(1) contrast(1.35); }
+</style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+
+<div id="app" class="max-w-[210mm] mx-auto p-4">
+  <header class="no-print mb-4 flex flex-wrap items-baseline gap-4">
+    <h1 class="text-2xl font-bold">Šachové hádanky</h1>
+    <a href="/" class="text-sm text-blue-600 hover:underline">← Filtr</a>
+    <button @click="doPrint" class="ml-auto bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm">🖨 Tisk</button>
+    <span v-if="info" class="text-sm text-gray-600 w-full">{{ info }}</span>
+  </header>
+
+  <section v-if="puzzles.length" class="grid-puzzles">
+    <article v-for="(p, i) in puzzles" :key="p.id" class="puzzle">
+      <a :href="'/solve.html?id=' + p.id" class="block">
+        <div class="board" :ref="el => boardRefs[i] = el"></div>
+        <div class="mt-2 text-xs text-center leading-snug">
+          <div class="font-semibold">{{ i + 1 }}. {{ p.toMove === 'white' ? 'Bílý' : 'Černý' }} táhne</div>
+          <div class="text-gray-600">#{{ p.id }} · rating {{ p.rating }}</div>
+        </div>
+      </a>
+    </article>
+  </section>
+
+  <section v-if="puzzles.length && showMoves" class="solutions mt-8">
+    <h2 class="text-xl font-bold mb-4">Řešení</h2>
+    <ol class="space-y-2 text-sm">
+      <li v-for="(p, i) in puzzles" :key="p.id" class="flex gap-3">
+        <span class="font-semibold w-8 text-right shrink-0">{{ i + 1 }}.</span>
+        <div class="min-w-0">
+          <div>
+            <span class="font-mono">#{{ p.id }}</span>
+            <span class="text-gray-600"> — {{ p.toMove === 'white' ? 'Bílý' : 'Černý' }} táhne (rating {{ p.rating }})</span>
+          </div>
+          <div>
+            <span class="text-gray-600">Soupeř zahrál: </span>
+            <span class="font-mono">{{ p.setupSan }}</span>
+            <span class="text-gray-600"> · řešení: </span>
+            <span class="font-mono">{{ p.solutionSan }}</span>
+          </div>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <div v-if="!loading && !puzzles.length" class="text-gray-500 text-center mt-12">
+    Žádné hádanky neodpovídají filtru. <a href="/" class="text-blue-600 hover:underline">Zpět na filtr</a>.
+  </div>
+</div>
+
+<script type="module">
+import { Chessground } from 'https://esm.sh/chessground@9.1.1';
+import { Chess } from 'https://esm.sh/chess.js@1.0.0';
+
+const { createApp, ref, onMounted, nextTick } = Vue;
+
+// Convert a UCI move sequence (starting from `fen`) into a single SAN string
+// with proper move-number prefixes (PGN-style). Returns array of per-move SANs
+// in parallel and the full formatted line.
+function buildSan(fen, uciMoves) {
+  const chess = new Chess(fen);
+  const sans = [];
+  const formatted = [];
+  // FEN fields: pieces, side, castling, ep, halfmove, fullmove
+  const fenFields = fen.trim().split(/\s+/);
+  let fullMove = parseInt(fenFields[5], 10) || 1;
+  let sideToMove = fenFields[1] === 'w' ? 'w' : 'b';
+  let blackEmittedFirst = false;
+
+  for (const uci of uciMoves) {
+    const from = uci.slice(0, 2);
+    const to = uci.slice(2, 4);
+    const promotion = uci.length > 4 ? uci[4] : undefined;
+    const m = chess.move({ from, to, promotion });
+    if (!m) break;
+    sans.push(m.san);
+
+    if (sideToMove === 'w') {
+      formatted.push(`${fullMove}.${m.san}`);
+    } else {
+      if (!blackEmittedFirst) {
+        formatted.push(`${fullMove}...${m.san}`);
+        blackEmittedFirst = true;
+      } else {
+        formatted.push(m.san);
+      }
+      fullMove += 1;
+    }
+    sideToMove = sideToMove === 'w' ? 'b' : 'w';
+  }
+  return { sans, line: formatted.join(' ') };
+}
+
+// Build the SAN line for the solution only (everything after the setup move),
+// but with proper move numbers continuing from the setup-move position.
+function preparePuzzle(p) {
+  const uciAll = p.moves.split(' ').filter(Boolean);
+  if (uciAll.length === 0) return null;
+
+  // Apply ONLY the setup move; collect its SAN with proper move-number prefix
+  const setupResult = buildSan(p.fen, [uciAll[0]]);
+  const setupSan = setupResult.line || '';
+
+  // Replay setup move on a chess instance to get the post-setup FEN
+  const chessAfterSetup = new Chess(p.fen);
+  {
+    const u = uciAll[0];
+    chessAfterSetup.move({
+      from: u.slice(0, 2),
+      to: u.slice(2, 4),
+      promotion: u.length > 4 ? u[4] : undefined,
+    });
+  }
+  const fenAfterSetup = chessAfterSetup.fen();
+  const toMove = chessAfterSetup.turn() === 'w' ? 'white' : 'black';
+
+  // Format the solution line starting from the post-setup position
+  const solutionResult = buildSan(fenAfterSetup, uciAll.slice(1));
+
+  return {
+    ...p,
+    fenAfterSetup,
+    toMove,
+    setupSan,
+    solutionSan: solutionResult.line,
+  };
+}
+
+createApp({
+  setup() {
+    const params = new URLSearchParams(location.search);
+    const showMoves = ref(params.get('show_moves') === '1');
+    const bw = params.get('bw') === '1';
+    const coords = params.get('coords') === '1';
+    if (bw) document.body.classList.add('bw');
+    const puzzles = ref([]);
+    const info = ref('');
+    const loading = ref(true);
+    const boardRefs = [];
+
+    async function load() {
+      const search = new URLSearchParams();
+      for (const [k, v] of params.entries()) {
+        if (k === 'show_moves') continue;
+        if (v) search.set(k, v);
+      }
+      const r = await fetch('/api/search?' + search.toString());
+      const data = await r.json();
+      const prepared = data.puzzles
+        .map(preparePuzzle)
+        .filter(Boolean);
+      puzzles.value = prepared;
+      info.value = `Nalezeno ${data.total_matches.toLocaleString('cs')} · zobrazeno ${prepared.length}`;
+      loading.value = false;
+
+      await nextTick();
+      // Mount a static Chessground for each puzzle
+      for (let i = 0; i < prepared.length; i++) {
+        const el = boardRefs[i];
+        if (!el) continue;
+        Chessground(el, {
+          fen: prepared[i].fenAfterSetup,
+          orientation: prepared[i].toMove,
+          viewOnly: true,
+          coordinates: coords,
+          highlight: { lastMove: false, check: true },
+          animation: { enabled: false },
+        });
+      }
+    }
+
+    function doPrint() { window.print(); }
+
+    onMounted(load);
+    return { puzzles, showMoves, info, loading, boardRefs, doPrint };
+  },
+}).mount('#app');
+</script>
+</body>
+</html>
