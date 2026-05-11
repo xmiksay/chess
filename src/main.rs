@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeSet, HashMap},
+    io::{Read, Write},
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
@@ -21,6 +22,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 const HARD_LIMIT: usize = 500;
+const PUZZLE_DB_URL: &str = "https://database.lichess.org/lichess_db_puzzle.csv.zst";
 
 #[derive(Parser, Debug)]
 #[command(about = "Lichess puzzle search server")]
@@ -83,6 +85,68 @@ struct AppState {
     themes: Vec<String>,
     rating_min: u16,
     rating_max: u16,
+}
+
+fn download_puzzle_db(path: &PathBuf) -> Result<()> {
+    info!(
+        "puzzle DB not found at {}, downloading from {}",
+        path.display(),
+        PUZZLE_DB_URL
+    );
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating parent dir for {}", path.display()))?;
+        }
+    }
+    let resp = ureq::get(PUZZLE_DB_URL)
+        .call()
+        .with_context(|| format!("requesting {}", PUZZLE_DB_URL))?;
+    let total_bytes = resp
+        .header("Content-Length")
+        .and_then(|s| s.parse::<u64>().ok());
+    let mut reader = resp.into_reader();
+
+    let tmp_path = path.with_extension("downloading");
+    let start = Instant::now();
+    let bytes = {
+        let file = std::fs::File::create(&tmp_path)
+            .with_context(|| format!("creating {}", tmp_path.display()))?;
+        let mut writer = std::io::BufWriter::with_capacity(1 << 20, file);
+        let mut buf = vec![0u8; 1 << 16];
+        let mut total: u64 = 0;
+        let mut last_log: u64 = 0;
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            writer.write_all(&buf[..n])?;
+            total += n as u64;
+            if total - last_log >= 25 * 1024 * 1024 {
+                match total_bytes {
+                    Some(t) => info!(
+                        "  downloaded {:.0}/{:.0} MB ({:.0}%)",
+                        total as f64 / 1_048_576.0,
+                        t as f64 / 1_048_576.0,
+                        (total as f64 / t as f64) * 100.0
+                    ),
+                    None => info!("  downloaded {:.0} MB", total as f64 / 1_048_576.0),
+                }
+                last_log = total;
+            }
+        }
+        writer.flush()?;
+        total
+    };
+    std::fs::rename(&tmp_path, path)
+        .with_context(|| format!("renaming {} to {}", tmp_path.display(), path.display()))?;
+    info!(
+        "downloaded {:.1} MB in {:?}",
+        bytes as f64 / 1_048_576.0,
+        start.elapsed()
+    );
+    Ok(())
 }
 
 fn load_puzzles(path: &PathBuf, limit: usize) -> Result<Vec<Puzzle>> {
@@ -335,6 +399,10 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    if !args.csv.exists() {
+        download_puzzle_db(&args.csv)?;
+    }
 
     let puzzles = load_puzzles(&args.csv, args.limit_puzzle)?;
     let state = Arc::new(build_state(puzzles));
